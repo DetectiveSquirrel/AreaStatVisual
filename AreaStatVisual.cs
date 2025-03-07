@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using ExileCore;
 using ExileCore.Shared.Cache;
@@ -21,6 +22,8 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
 
     public override void Render()
     {
+        if (!ShouldDraw())
+            return;
         var drawStrings = _drawStringsCache.Value;
         DrawTextBoxes(drawStrings);
     }
@@ -123,5 +126,19 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
         }
 
         return newDrawStrings;
+    }
+
+    private bool ShouldDraw()
+    {
+        var ingameUi = GameController?.IngameState.IngameUi;
+
+        if (ingameUi == null) return false;
+        if (!Settings.Display.DisplayWithPanels.RenderOnFullPanels && ingameUi.FullscreenPanels.Any(x => x.IsVisible))
+            return false;
+        if (!Settings.Display.DisplayWithPanels.RenderOnLargePanels && ingameUi.LargePanels.Any(x => x.IsVisible))
+            return false;
+        if (!Settings.Display.DisplayWithPanels.RenderOnLeftPanels && ingameUi.OpenLeftPanel.IsVisible)
+            return false;
+        return Settings.Display.DisplayWithPanels.RenderOnRightPanels || !ingameUi.OpenRightPanel.IsVisible;
     }
 }

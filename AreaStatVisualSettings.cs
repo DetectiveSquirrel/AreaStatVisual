@@ -31,6 +31,7 @@ public class DisplaySettings
 {
     public LocationPositionSettings Position { get; set; } = new();
     public LocationVisualsSettings Visuals { get; set; } = new();
+    public UIPanelSettings DisplayWithPanels { get; set; } = new();
 }
 
 [Submenu]
@@ -53,4 +54,13 @@ public class LocationVisualsSettings
     public RangeNode<float> BorderRounding { get; set; } = new(0, 0, 45);
     public ColorNode BorderColor { get; set; } = new(Color.White);
     public ColorNode BackgroundColor { get; set; } = new(Color.Black);
+}
+
+[Submenu(CollapsedByDefault = true)]
+public class UIPanelSettings
+{
+    public ToggleNode RenderOnFullPanels { get; set; } = new(false);
+    public ToggleNode RenderOnLargePanels { get; set; } = new(false);
+    public ToggleNode RenderOnLeftPanels { get; set; } = new(false);
+    public ToggleNode RenderOnRightPanels { get; set; } = new(false);
 }
