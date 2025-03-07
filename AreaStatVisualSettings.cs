@@ -46,6 +46,7 @@ public class LocationVisualsSettings
     public ToggleNode UseCustomFont { get; set; } = new(false);
     public TextNode CustomLoadedFont { get; set; } = new("default:13");
     public ToggleNode RightAlignedText { get; set; } = new(false);
+    public ToggleNode DrawAscending { get; set; } = new(false);
     public RangeNode<int> TextSpacing { get; set; } = new(8, 0, 200);
     public RangeNode<float> BorderPadding { get; set; } = new(4, 1, 200);
     public RangeNode<int> BorderThickness { get; set; } = new(2, 1, 200);

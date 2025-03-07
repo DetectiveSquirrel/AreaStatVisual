@@ -28,43 +28,59 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
     private void DrawTextBoxes(Dictionary<string, Color> drawStrings)
     {
         var windowRect = GameController.Window.GetWindowRectangle();
-        var screenWidth = (int)windowRect.Width;
-        var screenHeight = (int)windowRect.Height;
+        var screenWidth = windowRect.Width;
+        var screenHeight = windowRect.Height;
 
-        var startX = screenWidth * (Settings.Display.Position.XPos.Value / 100f);
-        var startY = screenHeight * (Settings.Display.Position.YPos.Value / 100f);
+        var anchorX = screenWidth * (Settings.Display.Position.XPos.Value / 100f);
+        var anchorY = screenHeight * (Settings.Display.Position.YPos.Value / 100f);
 
-        var lines = new List<(string text, Color color, Vector2 position, Vector2 textSize)>();
-        var currentY = startY;
-        var minX = float.MaxValue;
-        var maxX = float.MinValue;
-
+        var measuredLines = new List<(string text, Color color, Vector2 size)>();
         foreach (var (text, textColor) in drawStrings)
         {
             var textSize = Settings.Display.Visuals.UseCustomFont
                 ? Graphics.MeasureText(text, Settings.Display.Visuals.CustomLoadedFont.Value)
                 : Graphics.MeasureText(text);
+            measuredLines.Add((text, textColor, textSize));
+        }
 
-            var x = startX;
-            if (Settings.Display.Visuals.RightAlignedText.Value)
-                x = startX - textSize.X;
+        var lines = new List<(string text, Color color, Vector2 position, Vector2 size)>();
 
-            var position = new Vector2(x, currentY);
-            lines.Add((text, textColor, position, textSize));
+        var currentY = anchorY;
+        float minX = float.MaxValue, maxX = float.MinValue;
+        float minY = float.MaxValue, maxY = float.MinValue;
+
+        foreach (var (text, color, size) in measuredLines)
+        {
+            var textSize = size;
+            var x = Settings.Display.Visuals.RightAlignedText.Value ? anchorX - textSize.X : anchorX;
+            Vector2 pos;
+
+            if (!Settings.Display.Visuals.DrawAscending.Value)
+            {
+                pos = new Vector2(x, currentY);
+                currentY += textSize.Y + Settings.Display.Visuals.TextSpacing.Value;
+            }
+            else
+            {
+                currentY -= textSize.Y;
+                pos = new Vector2(x, currentY);
+                currentY -= Settings.Display.Visuals.TextSpacing.Value;
+            }
+
+            lines.Add((text, color, pos, textSize));
 
             if (x < minX)
                 minX = x;
             if (x + textSize.X > maxX)
                 maxX = x + textSize.X;
-
-            currentY += textSize.Y + Settings.Display.Visuals.TextSpacing.Value;
+            if (pos.Y < minY)
+                minY = pos.Y;
+            if (pos.Y + textSize.Y > maxY)
+                maxY = pos.Y + textSize.Y;
         }
 
-        if (lines.Count > 0)
-            currentY -= Settings.Display.Visuals.TextSpacing.Value;
-
-        var paddingValue = Settings.Display.Visuals.BorderPadding.Value;
-        var boxRect = new RectangleF(minX - paddingValue, startY - paddingValue, maxX - minX + 2 * paddingValue, currentY - startY + 2 * paddingValue);
+        var pad = Settings.Display.Visuals.BorderPadding.Value;
+        var boxRect = new RectangleF(minX - pad, minY - pad, maxX - minX + 2 * pad, maxY - minY + 2 * pad);
 
         Graphics.DrawBox(boxRect, Settings.Display.Visuals.BackgroundColor.Value, Settings.Display.Visuals.BorderRounding.Value);
         Graphics.DrawFrame(
@@ -94,12 +110,12 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
             foreach (var instanceStat in GameController.IngameState.Data.MapStats)
             {
                 var statKey = instanceStat.Key.ToString();
-
                 if (regex.IsMatch(statKey))
                 {
                     var displayString = !string.IsNullOrEmpty(stat.ReplacementString.Value)
                         ? stat.ReplacementString.Value
                         : Regex.Replace(statKey, "(?<!^)([A-Z])", " $1");
+
                     displayString += stat.ShowKeyValue.Value ? $": {instanceStat.Value}" : "";
                     newDrawStrings[displayString] = stat.TextColor.Value;
                 }
