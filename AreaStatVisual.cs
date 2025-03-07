@@ -97,7 +97,9 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
 
                 if (regex.IsMatch(statKey))
                 {
-                    var displayString = !string.IsNullOrEmpty(stat.ReplacementString.Value) ? stat.ReplacementString.Value : statKey;
+                    var displayString = !string.IsNullOrEmpty(stat.ReplacementString.Value)
+                        ? stat.ReplacementString.Value
+                        : Regex.Replace(statKey, "(?<!^)([A-Z])", " $1");
                     displayString += stat.ShowKeyValue.Value ? $": {instanceStat.Value}" : "";
                     newDrawStrings[displayString] = stat.TextColor.Value;
                 }
