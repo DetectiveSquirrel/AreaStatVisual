@@ -1,144 +1,226 @@
-﻿using System.Collections.Generic;
-using System.Linq;
-using System.Text.RegularExpressions;
 using ExileCore;
-using ExileCore.Shared.Cache;
 using ExileCore.Shared.Enums;
 using ImGuiNET;
 using SharpDX;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using static System.Enum;
 using Vector2 = System.Numerics.Vector2;
 
 namespace AreaStatVisual;
 
 public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
 {
-    private readonly TimeCache<Dictionary<string, Color>> _drawStringsCache;
+    private static readonly Dictionary<string, Color> Empty = new();
+    private static readonly Regex SpacedCamelCase = new("(?<!^)([A-Z])", RegexOptions.Compiled);
+
+    private static readonly RegexOptions RxOpts = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
+
+    private readonly Dictionary<string, Color> _lineBuffer = new();
+    private readonly Dictionary<string, Vector2> _measureCache = new(StringComparer.Ordinal);
+
+    private readonly List<(string t, Color c, Vector2 sz)> _measureScratch = new();
+    private readonly List<(string t, Color c, Vector2 pos, Vector2 sz)> _placedScratch = new();
+    private string _measureCustomFontSpec = "";
+    private bool _measureUseCustomFont;
+
+    private List<StatRule>? _rules;
 
     public AreaStatVisual()
     {
         Name = "Area Stat Visual";
-        _drawStringsCache = new TimeCache<Dictionary<string, Color>>(BuildDrawStrings, 200);
     }
 
     public override void Render()
     {
-        if (!ShouldDraw())
-            return;
-        var drawStrings = _drawStringsCache.Value;
-        DrawTextBoxes(drawStrings);
+        if (!Settings.Enable || !GameController.InGame) return;
+        if (!ShouldDraw()) return;
+
+        var lines = BuildLines();
+        if (lines.Count == 0) return;
+
+        DrawText(lines);
     }
 
-    private void DrawTextBoxes(Dictionary<string, Color> drawStrings)
+    public override void AreaChange(AreaInstance _)
     {
-        var windowRect = GameController.Window.GetWindowRectangle();
-        var screenWidth = windowRect.Width;
-        var screenHeight = windowRect.Height;
-
-        var anchorX = screenWidth * (Settings.Display.Position.XPos.Value / 100f);
-        var anchorY = screenHeight * (Settings.Display.Position.YPos.Value / 100f);
-
-        var measuredLines = new List<(string text, Color color, Vector2 size)>();
-        foreach (var (text, textColor) in drawStrings)
-        {
-            var textSize = Settings.Display.Visuals.UseCustomFont
-                ? Graphics.MeasureText(text, Settings.Display.Visuals.CustomLoadedFont.Value)
-                : Graphics.MeasureText(text);
-            measuredLines.Add((text, textColor, textSize));
-        }
-
-        var lines = new List<(string text, Color color, Vector2 position, Vector2 size)>();
-
-        var currentY = anchorY;
-        float minX = float.MaxValue, maxX = float.MinValue;
-        float minY = float.MaxValue, maxY = float.MinValue;
-
-        foreach (var (text, color, size) in measuredLines)
-        {
-            var textSize = size;
-            var x = Settings.Display.Visuals.RightAlignedText.Value ? anchorX - textSize.X : anchorX;
-            Vector2 pos;
-
-            if (!Settings.Display.Visuals.DrawAscending.Value)
-            {
-                pos = new Vector2(x, currentY);
-                currentY += textSize.Y + Settings.Display.Visuals.TextSpacing.Value;
-            }
-            else
-            {
-                currentY -= textSize.Y;
-                pos = new Vector2(x, currentY);
-                currentY -= Settings.Display.Visuals.TextSpacing.Value;
-            }
-
-            lines.Add((text, color, pos, textSize));
-
-            if (x < minX)
-                minX = x;
-            if (x + textSize.X > maxX)
-                maxX = x + textSize.X;
-            if (pos.Y < minY)
-                minY = pos.Y;
-            if (pos.Y + textSize.Y > maxY)
-                maxY = pos.Y + textSize.Y;
-        }
-
-        var pad = Settings.Display.Visuals.BorderPadding.Value;
-        var boxRect = new RectangleF(minX - pad, minY - pad, maxX - minX + 2 * pad, maxY - minY + 2 * pad);
-
-        Graphics.DrawBox(boxRect, Settings.Display.Visuals.BackgroundColor.Value, Settings.Display.Visuals.BorderRounding.Value);
-        Graphics.DrawFrame(
-            boxRect, Settings.Display.Visuals.BorderColor.Value, Settings.Display.Visuals.BorderRounding.Value, Settings.Display.Visuals.BorderThickness.Value,
-            (int)ImDrawFlags.RoundCornersAll);
-
-        foreach (var line in lines)
-        {
-            if (Settings.Display.Visuals.UseCustomFont)
-                Graphics.DrawText(line.text, line.position, line.color, Settings.Display.Visuals.CustomLoadedFont.Value, FontAlign.Left);
-            else
-                Graphics.DrawText(line.text, line.position, line.color, FontAlign.Left);
-        }
+        _rules = null;
+        _measureCache.Clear();
     }
 
-    private Dictionary<string, Color> BuildDrawStrings()
+    private Dictionary<string, Color> BuildLines()
     {
-        var newDrawStrings = new Dictionary<string, Color>();
+        var data = GameController.InGame ? GameController.IngameState.Data : null;
+        var statSource = data?.MapStats;
+        if (statSource == null) return Empty;
 
-        foreach (var stat in Settings.AreaStats.Content)
+        _rules ??= BuildRules();
+        _lineBuffer.Clear();
+        FillMatchedLines(statSource, _rules, _lineBuffer);
+        return _lineBuffer;
+    }
+
+    private List<StatRule> BuildRules()
+    {
+        var list = new List<StatRule>();
+        foreach (var row in Settings.AreaStats.Content)
         {
-            if (!stat.Show.Value)
+            var raw = row.GameStatRegex.Value?.Trim();
+            if (string.IsNullOrEmpty(raw)) continue;
+
+            if (TryParseAsGameStat(raw, out var stat))
+            {
+                list.Add(new StatRule(row, stat, stat.ToString(), null));
                 continue;
-
-            var regex = new Regex(stat.GameStatRegex.Value, RegexOptions.IgnoreCase);
-
-            foreach (var instanceStat in GameController.IngameState.Data.MapStats)
-            {
-                var statKey = instanceStat.Key.ToString();
-                if (regex.IsMatch(statKey))
-                {
-                    var displayString = !string.IsNullOrEmpty(stat.ReplacementString.Value)
-                        ? stat.ReplacementString.Value
-                        : Regex.Replace(statKey, "(?<!^)([A-Z])", " $1");
-
-                    displayString += stat.ShowKeyValue.Value ? $": {instanceStat.Value}" : "";
-                    newDrawStrings[displayString] = stat.TextColor.Value;
-                }
             }
+
+            if (TryCompilePattern(raw, out var rx)) list.Add(new StatRule(row, null, null, rx));
         }
 
-        return newDrawStrings;
+        return list;
+    }
+
+    private static bool TryParseAsGameStat(string trimmed, out GameStat stat)
+    {
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            stat = default;
+            return false;
+        }
+
+        return TryParse(trimmed, true, out stat) && IsDefined(typeof(GameStat), stat);
+    }
+
+    private static bool TryCompilePattern(string raw, out Regex? rx)
+    {
+        rx = null;
+        try
+        {
+            rx = new Regex(raw, RxOpts, TimeSpan.FromMilliseconds(50));
+            return true;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static void FillMatchedLines(IReadOnlyDictionary<GameStat, int> map, List<StatRule> rules, Dictionary<string, Color> dict)
+    {
+        foreach (var r in rules)
+        {
+            if (!r.Row.Show.Value) continue;
+
+            if (r.Stat is { } gs)
+            {
+                if (!map.TryGetValue(gs, out var v)) continue;
+                AddLine(dict, r.Row, r.StatKey!, v);
+                continue;
+            }
+
+            var rx = r.Pattern!;
+            foreach (var kv in map)
+            {
+                var keyStr = kv.Key.ToString();
+                if (!rx.IsMatch(keyStr)) continue;
+                AddLine(dict, r.Row, keyStr, kv.Value);
+            }
+        }
+    }
+
+    private static void AddLine(Dictionary<string, Color> dict, CustomAreaStatSettings row, string key, int value)
+    {
+        var text = !string.IsNullOrEmpty(row.ReplacementString.Value) ? row.ReplacementString.Value : SpacedCamelCase.Replace(key, " $1");
+        if (row.ShowKeyValue.Value) text += $": {value}";
+        dict[text] = row.TextColor.Value;
+    }
+
+    private void DrawText(Dictionary<string, Color> lines)
+    {
+        var ui = Settings.Display;
+        var vis = ui.Visuals;
+        var rect = GameController.Window.GetWindowRectangle();
+
+        var ax = rect.Width * (ui.Position.XPos.Value / 100f);
+        var ay = rect.Height * (ui.Position.YPos.Value / 100f);
+
+        var useCustom = vis.UseCustomFont.Value;
+        var customSpec = vis.CustomLoadedFont.Value ?? "";
+        if (useCustom != _measureUseCustomFont || customSpec != _measureCustomFontSpec)
+        {
+            _measureCache.Clear();
+            _measureUseCustomFont = useCustom;
+            _measureCustomFontSpec = customSpec;
+        }
+
+        _measureScratch.Clear();
+        foreach (var (t, c) in lines)
+        {
+            if (!_measureCache.TryGetValue(t, out var sz))
+            {
+                sz = vis.UseCustomFont ? Graphics.MeasureText(t, vis.CustomLoadedFont.Value) : Graphics.MeasureText(t);
+                _measureCache[t] = sz;
+            }
+
+            _measureScratch.Add((t, c, sz));
+        }
+
+        float xMin = float.MaxValue, xMax = float.MinValue, yMin = float.MaxValue, yMax = float.MinValue;
+        _placedScratch.Clear();
+        var y = ay;
+
+        foreach (var (t, c, sz) in _measureScratch)
+        {
+            var x = vis.RightAlignedText.Value ? ax - sz.X : ax;
+            Vector2 pos;
+            if (!vis.DrawAscending.Value)
+            {
+                pos = new Vector2(x, y);
+                y += sz.Y + vis.TextSpacing.Value;
+            }
+            else
+            {
+                y -= sz.Y;
+                pos = new Vector2(x, y);
+                y -= vis.TextSpacing.Value;
+            }
+
+            _placedScratch.Add((t, c, pos, sz));
+            xMin = Math.Min(xMin, x);
+            xMax = Math.Max(xMax, x + sz.X);
+            yMin = Math.Min(yMin, pos.Y);
+            yMax = Math.Max(yMax, pos.Y + sz.Y);
+        }
+
+        var pad = vis.BorderPadding.Value;
+        var box = new RectangleF(xMin - pad, yMin - pad, xMax - xMin + 2 * pad, yMax - yMin + 2 * pad);
+        Graphics.DrawBox(box, vis.BackgroundColor.Value, vis.BorderRounding.Value);
+        Graphics.DrawFrame(box, vis.BorderColor.Value, vis.BorderRounding.Value, vis.BorderThickness.Value, (int)ImDrawFlags.RoundCornersAll);
+
+        foreach (var (t, c, pos, _) in _placedScratch)
+        {
+            if (vis.UseCustomFont) Graphics.DrawText(t, pos, c, vis.CustomLoadedFont.Value, FontAlign.Left);
+            else Graphics.DrawText(t, pos, c, FontAlign.Left);
+        }
     }
 
     private bool ShouldDraw()
     {
-        var ingameUi = GameController?.IngameState.IngameUi;
+        var ui = GameController?.IngameState.IngameUi;
+        if (ui == null) return false;
 
-        if (ingameUi == null) return false;
-        if (!Settings.Display.DisplayWithPanels.RenderOnFullPanels && ingameUi.FullscreenPanels.Any(x => x.IsVisible))
-            return false;
-        if (!Settings.Display.DisplayWithPanels.RenderOnLargePanels && ingameUi.LargePanels.Any(x => x.IsVisible))
-            return false;
-        if (!Settings.Display.DisplayWithPanels.RenderOnLeftPanels && ingameUi.OpenLeftPanel.IsVisible)
-            return false;
-        return Settings.Display.DisplayWithPanels.RenderOnRightPanels || !ingameUi.OpenRightPanel.IsVisible;
+        var p = Settings.Display.DisplayWithPanels;
+        if (!p.RenderOnFullPanels && ui.FullscreenPanels.Any(x => x.IsVisible)) return false;
+        if (!p.RenderOnLargePanels && ui.LargePanels.Any(x => x.IsVisible)) return false;
+        if (!p.RenderOnLeftPanels && ui.OpenLeftPanel.IsVisible) return false;
+        return p.RenderOnRightPanels || !ui.OpenRightPanel.IsVisible;
     }
+
+    private readonly record struct StatRule(CustomAreaStatSettings Row, GameStat? Stat, string? StatKey, Regex? Pattern);
 }
