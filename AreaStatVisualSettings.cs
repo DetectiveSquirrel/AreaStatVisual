@@ -1,4 +1,4 @@
-﻿using ExileCore.Shared.Attributes;
+using ExileCore.Shared.Attributes;
 using ExileCore.Shared.Interfaces;
 using ExileCore.Shared.Nodes;
 using SharpDX;
@@ -15,15 +15,18 @@ public class AreaStatVisualSettings : ISettings
 [Submenu]
 public class CustomAreaStatSettings
 {
+    public ToggleNode Show { get; set; } = new(true);
+
     public TextNode GameStatRegex { get; set; } = new("^$");
 
+    public ToggleNode UseGameStatTranslation { get; set; } = new(true);
+
+    [ConditionalDisplay(nameof(UseGameStatTranslation), false)]
     public TextNode ReplacementString { get; set; } = new("");
 
     public ToggleNode ShowKeyValue { get; set; } = new(false);
 
     public ColorNode TextColor { get; set; } = new(Color.White);
-
-    public ToggleNode Show { get; set; } = new(true);
 }
 
 [Submenu]

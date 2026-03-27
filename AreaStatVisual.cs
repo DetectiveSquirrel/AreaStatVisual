@@ -1,4 +1,5 @@
 using ExileCore;
+using ExileCore.PoEMemory;
 using ExileCore.Shared.Enums;
 using ImGuiNET;
 using SharpDX;
@@ -13,16 +14,19 @@ namespace AreaStatVisual;
 
 public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
 {
+    private const RegexOptions RxOpts = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
     private static readonly Dictionary<string, Color> Empty = new();
     private static readonly Regex SpacedCamelCase = new("(?<!^)([A-Z])", RegexOptions.Compiled);
-
-    private static readonly RegexOptions RxOpts = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
 
     private readonly Dictionary<string, Color> _lineBuffer = new();
     private readonly Dictionary<string, Vector2> _measureCache = new(StringComparer.Ordinal);
 
-    private readonly List<(string t, Color c, Vector2 sz)> _measureScratch = new();
-    private readonly List<(string t, Color c, Vector2 pos, Vector2 sz)> _placedScratch = new();
+    private readonly List<(string t, Color c, Vector2 sz)> _measureScratch = [];
+    private readonly List<(string t, Color c, Vector2 pos, Vector2 sz)> _placedScratch = [];
+
+    private readonly Dictionary<GameStat, int> _singleStatValues = new(1);
+
+    private readonly Dictionary<(GameStat Stat, int Value), string?> _statTranslationByKey = new();
     private string _measureCustomFontSpec = "";
     private bool _measureUseCustomFont;
 
@@ -58,7 +62,8 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
 
         _rules ??= BuildRules();
         _lineBuffer.Clear();
-        FillMatchedLines(statSource, _rules, _lineBuffer);
+        _statTranslationByKey.Clear();
+        FillMatchedLines(GameController.Files, statSource, _rules, _lineBuffer);
         return _lineBuffer;
     }
 
@@ -111,16 +116,14 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
         }
     }
 
-    private static void FillMatchedLines(IReadOnlyDictionary<GameStat, int> map, List<StatRule> rules, Dictionary<string, Color> dict)
+    private void FillMatchedLines(FilesContainer? files, IReadOnlyDictionary<GameStat, int> map, List<StatRule> rules, Dictionary<string, Color> dict)
     {
-        foreach (var r in rules)
+        foreach (var r in rules.Where(r => r.Row.Show.Value))
         {
-            if (!r.Row.Show.Value) continue;
-
             if (r.Stat is { } gs)
             {
                 if (!map.TryGetValue(gs, out var v)) continue;
-                AddLine(dict, r.Row, r.StatKey!, v);
+                AddLine(dict, files, r.Row, r.StatKey!, v, gs);
                 continue;
             }
 
@@ -129,16 +132,62 @@ public class AreaStatVisual : BaseSettingsPlugin<AreaStatVisualSettings>
             {
                 var keyStr = kv.Key.ToString();
                 if (!rx.IsMatch(keyStr)) continue;
-                AddLine(dict, r.Row, keyStr, kv.Value);
+                AddLine(dict, files, r.Row, keyStr, kv.Value, kv.Key);
             }
         }
     }
 
-    private static void AddLine(Dictionary<string, Color> dict, CustomAreaStatSettings row, string key, int value)
+    private void AddLine(Dictionary<string, Color> dict, FilesContainer? files, CustomAreaStatSettings row, string key, int value, GameStat stat)
     {
-        var text = !string.IsNullOrEmpty(row.ReplacementString.Value) ? row.ReplacementString.Value : SpacedCamelCase.Replace(key, " $1");
+        string text;
+        if (row.UseGameStatTranslation.Value && files != null && TryGetDisplayTranslation(files, stat, value, out var translated)) text = translated;
+        else text = !string.IsNullOrEmpty(row.ReplacementString.Value) ? row.ReplacementString.Value : SpacedCamelCase.Replace(key, " $1");
+
         if (row.ShowKeyValue.Value) text += $": {value}";
         dict[text] = row.TextColor.Value;
+    }
+
+    private bool TryGetDisplayTranslation(FilesContainer files, GameStat stat, int value, out string text)
+    {
+        var key = (stat, value);
+        if (_statTranslationByKey.TryGetValue(key, out var cached))
+        {
+            if (cached != null)
+            {
+                text = cached;
+                return true;
+            }
+
+            text = null!;
+            return false;
+        }
+
+        _singleStatValues.Clear();
+        _singleStatValues[stat] = value;
+        var raw = ResolveStatDescriptionTranslation(files, _singleStatValues);
+        if (string.IsNullOrWhiteSpace(raw) || raw.StartsWith('<'))
+        {
+            _statTranslationByKey[key] = null;
+            text = null!;
+            return false;
+        }
+
+        var normalized = raw.Replace("\r\n", "\n").Replace("\n", " ");
+        _statTranslationByKey[key] = normalized;
+        text = normalized;
+        return true;
+    }
+
+    private static string ResolveStatDescriptionTranslation(FilesContainer files, IReadOnlyDictionary<GameStat, int> values)
+    {
+        var primary = files.StatDescriptions.TranslateMod(values);
+        if (!primary.StartsWith('<')) return primary;
+
+        var heist = files.HeistEquipmentStatDescriptions.TranslateMod(values);
+        if (!heist.StartsWith('<')) return heist;
+
+        var map = files.MapStatDescriptions.TranslateMod(values);
+        return !map.StartsWith('<') ? map : primary;
     }
 
     private void DrawText(Dictionary<string, Color> lines)
